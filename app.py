@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from io import BytesIO
 from docx import Document
 import streamlit.components.v1 as components
-import openai
+from openai import OpenAI
 
 # --------------------------
 # CONFIG
@@ -17,7 +17,7 @@ st.title("SEO Blog Brief Generator")
 # --------------------------
 # SECRETS
 # --------------------------
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
 
 # --------------------------
@@ -53,29 +53,33 @@ def fetch_top_serp_article(keyword, api_key):
 
 def extract_topic_from_url(url):
     """Extract words from URL path segments as semantic topics."""
-    path = urlparse(url).path  # '/data-warehouse-architecture'
-    segments = [seg for seg in path.split('/') if seg]  # ['data-warehouse-architecture']
+    path = urlparse(url).path
+    segments = [seg for seg in path.split('/') if seg]
     topics = []
     for seg in segments:
         topics += seg.replace('-', ' ').split()
     return " ".join(topics)
 
 def generate_embeddings(text_list):
-    """Generate embeddings using OpenAI."""
-    response = openai.Embedding.create(
-        input=text_list,
-        model="text-embedding-3-small"
+    """Generate embeddings using the new OpenAI client."""
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text_list
     )
-    return [d["embedding"] for d in response["data"]]
+    return [item.embedding for item in response.data]
 
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-def score_url_semantic(keyword, url):
-    """Compute semantic similarity between keyword and URL path."""
-    topics = extract_topic_from_url(url)
-    embeddings = generate_embeddings([keyword, topics])
-    return cosine_similarity(embeddings[0], embeddings[1])
+def score_urls_semantic_batch(keyword, urls):
+    """Batch process URLs for semantic similarity."""
+    # Prepare URL topics
+    url_texts = [extract_topic_from_url(u) for u in urls]
+    embeddings = generate_embeddings([keyword] + url_texts)
+    keyword_emb = embeddings[0]
+    url_embs = embeddings[1:]
+    # Compute similarities
+    return [(u, cosine_similarity(keyword_emb, emb)) for u, emb in zip(urls, url_embs)]
 
 def create_docx(brief):
     """Generate .docx file from brief data."""
@@ -112,24 +116,22 @@ if generate_btn:
         progress_val += 20
         progress.progress(progress_val)
 
-        # 2. Parse uploaded CSV pages
+        # 2. Process uploaded CSV pages in batch
         status_text.text("Processing uploaded CSV pages for semantic relevance...")
         if uploaded_csv:
             pages_df = pd.read_csv(uploaded_csv)
             if "url" not in pages_df.columns:
                 st.error("CSV must have a 'url' column.")
                 st.stop()
-            semantic_scores = []
-            for url in pages_df["url"]:
-                score = score_url_semantic(keyword, url)
-                semantic_scores.append((url, score))
+            urls = pages_df["url"].tolist()
+            semantic_scores = score_urls_semantic_batch(keyword, urls)
             top_semantic = sorted(semantic_scores, key=lambda x: x[1], reverse=True)[:5]
         else:
             top_semantic = []
         progress_val += 30
         progress.progress(progress_val)
 
-        # 3. Generate sections for brief (simple placeholder)
+        # 3. Generate sections for brief (placeholder)
         status_text.text("Generating brief sections...")
         sections = [
             {
