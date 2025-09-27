@@ -1,12 +1,12 @@
 import streamlit as st
-from bs4 import BeautifulSoup
 import requests
-import openai
-import numpy as np
 import pandas as pd
-from docx import Document
+import numpy as np
+from urllib.parse import urlparse
 from io import BytesIO
+from docx import Document
 import streamlit.components.v1 as components
+import openai
 
 # --------------------------
 # CONFIG
@@ -44,28 +44,24 @@ def fetch_top_serp_article(keyword, api_key):
         r = requests.get("https://serpapi.com/search", params=params, timeout=10)
         data = r.json()
         top_url = data.get("organic_results", [{}])[0].get("link", "")
-        return top_url
+        top_title = data.get("organic_results", [{}])[0].get("title", "")
+        top_snippet = data.get("organic_results", [{}])[0].get("snippet", "")
+        return {"url": top_url, "title": top_title, "meta": top_snippet}
     except Exception as e:
         st.warning(f"Failed to fetch top SERP article: {e}")
-        return ""
+        return {"url": "", "title": f"Suggested: {keyword}", "meta": ""}
 
-def scrape_article(url):
-    """Scrape headings and paragraphs from a URL."""
-    try:
-        r = requests.get(url, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        headings = [h.get_text() for h in soup.find_all(["h1","h2","h3"])]
-        paragraphs = [p.get_text() for p in soup.find_all("p")]
-        text = "\n".join(paragraphs)
-        title = soup.title.string if soup.title else ""
-        meta = soup.find("meta", attrs={"name":"description"})
-        meta_desc = meta["content"] if meta else ""
-        return {"url": url, "title": title, "meta": meta_desc, "headings": headings, "text": text}
-    except Exception as e:
-        st.warning(f"Failed to scrape {url}: {e}")
-        return {"url": url, "title": "", "meta": "", "headings": [], "text": ""}
+def extract_topic_from_url(url):
+    """Extract words from URL path segments as semantic topics."""
+    path = urlparse(url).path  # '/data-warehouse-architecture'
+    segments = [seg for seg in path.split('/') if seg]  # ['data-warehouse-architecture']
+    topics = []
+    for seg in segments:
+        topics += seg.replace('-', ' ').split()
+    return " ".join(topics)
 
 def generate_embeddings(text_list):
+    """Generate embeddings using OpenAI."""
     response = openai.Embedding.create(
         input=text_list,
         model="text-embedding-3-small"
@@ -75,7 +71,14 @@ def generate_embeddings(text_list):
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
+def score_url_semantic(keyword, url):
+    """Compute semantic similarity between keyword and URL path."""
+    topics = extract_topic_from_url(url)
+    embeddings = generate_embeddings([keyword, topics])
+    return cosine_similarity(embeddings[0], embeddings[1])
+
 def create_docx(brief):
+    """Generate .docx file from brief data."""
     doc = Document()
     doc.add_heading(brief["title"], 0)
     doc.add_paragraph(brief["meta"])
@@ -83,12 +86,6 @@ def create_docx(brief):
         doc.add_heading(s["heading"], level=2)
         doc.add_paragraph(s["what_to_write"])
         doc.add_paragraph(f"Why: {s['why']}")
-    if brief["faqs"]:
-        doc.add_heading("FAQs", level=2)
-        for f in brief["faqs"]:
-            doc.add_paragraph(f"Q: {f['question']}")
-            doc.add_paragraph(f"A: {f['suggested_content']}")
-            doc.add_paragraph(f"Why: {f['why']}")
     if brief["internal_links"]:
         doc.add_heading("Internal Links", level=2)
         for link in brief["internal_links"]:
@@ -111,8 +108,7 @@ if generate_btn:
 
         # 1. Fetch top SERP article
         status_text.text("Fetching top-ranking article...")
-        top_url = fetch_top_serp_article(keyword, SERPAPI_KEY)
-        top_article = scrape_article(top_url)
+        top_article = fetch_top_serp_article(keyword, SERPAPI_KEY)
         progress_val += 20
         progress.progress(progress_val)
 
@@ -123,52 +119,45 @@ if generate_btn:
             if "url" not in pages_df.columns:
                 st.error("CSV must have a 'url' column.")
                 st.stop()
-            pages_texts = [scrape_article(url)["text"] for url in pages_df["url"]]
-            all_embeddings = generate_embeddings(pages_texts + [keyword])
-            keyword_emb = all_embeddings[-1]
-            page_embs = all_embeddings[:-1]
             semantic_scores = []
-            for i, emb in enumerate(page_embs):
-                score = cosine_similarity(keyword_emb, emb)
-                semantic_scores.append((pages_df["url"][i], score))
+            for url in pages_df["url"]:
+                score = score_url_semantic(keyword, url)
+                semantic_scores.append((url, score))
             top_semantic = sorted(semantic_scores, key=lambda x: x[1], reverse=True)[:5]
         else:
             top_semantic = []
         progress_val += 30
         progress.progress(progress_val)
 
-        # 3. Generate sections for brief
+        # 3. Generate sections for brief (simple placeholder)
         status_text.text("Generating brief sections...")
-        sections = []
-        for idx, h in enumerate(top_article["headings"]):
-            sections.append({
-                "heading": h,
-                "what_to_write": f"Explain this topic in 150-200 words. Pull insights from {top_url}.",
-                "why": "Covers key topic points and semantic relevance."
-            })
+        sections = [
+            {
+                "heading": f"Introduction to {keyword}",
+                "what_to_write": f"Explain the concept of {keyword} in 150-200 words. Reference top-ranking article: {top_article['url']}.",
+                "why": "Provides overview and establishes topic relevance."
+            },
+            {
+                "heading": f"Key Concepts of {keyword}",
+                "what_to_write": f"Discuss main concepts related to {keyword}. Include semantic links where relevant.",
+                "why": "Ensures thorough coverage of the topic."
+            }
+        ]
         progress_val += 30
         progress.progress(progress_val)
 
-        # 4. Placeholder for PAA
-        status_text.text("Fetching People Also Ask...")
-        paa_questions = []  # To integrate SERPAPI PAA later
-        faqs = [{"question": q, "suggested_content": f"Write 50-100 words for '{q}'", "why": "Covers search intent"} for q in paa_questions]
-        progress_val += 10
-        progress.progress(progress_val)
-
-        # 5. Compile brief
+        # 4. Compile brief
         brief = {
             "title": top_article["title"] or f"Suggested: {keyword}",
             "meta": top_article["meta"] or f"Meta for {keyword}",
             "sections": sections,
-            "faqs": faqs,
             "internal_links": top_semantic
         }
         progress_val = 100
         progress.progress(progress_val)
         status_text.text("Brief generation complete!")
 
-        # 6. Display brief preview
+        # 5. Display brief preview
         st.subheader("SEO Brief Preview")
         st.markdown(f"**Title:** {brief['title']}")
         st.markdown(f"**Meta Description:** {brief['meta']}")
@@ -179,26 +168,20 @@ if generate_btn:
             st.text_area(f"What to write (section {idx+1})", value=s["what_to_write"], key=f"section_{idx}")
             st.caption(f"Why: {s['why']}")
 
-        if brief["faqs"]:
-            st.subheader("FAQs")
-            for idx, f in enumerate(brief["faqs"]):
-                st.text_area(f"FAQ: {f['question']} (FAQ {idx+1})", value=f["suggested_content"], key=f"faq_{idx}")
-                st.caption(f"Why: {f['why']}")
-
         if brief["internal_links"]:
             st.subheader("Recommended Internal Links")
             for name, score in brief["internal_links"]:
                 st.markdown(f"- {name} (Score: {score:.2f})")
 
-        # 7. Download .docx
+        # 6. Download .docx
         doc_file = create_docx(brief)
         st.download_button(
-            "Download SEO Brief (.docx)", 
-            doc_file, 
+            "Download SEO Brief (.docx)",
+            doc_file,
             file_name=f"{keyword}_seo_brief.docx"
         )
 
-        # 8. Google Docs iframe preview
+        # 7. Google Docs iframe preview
         st.subheader("Preview SEO Brief in Google Docs")
         gdoc_url = st.text_input("Enter shareable Google Docs link (view only):", value="")
         if gdoc_url:
