@@ -1,222 +1,210 @@
-# app.py
 import streamlit as st
-import streamlit.components.v1 as components
-import requests
 from bs4 import BeautifulSoup
-import xml.etree.ElementTree as ET
+from googlesearch_results import GoogleSearch
+import requests
+import openai
 import numpy as np
-from openai import OpenAI
 from docx import Document
 from io import BytesIO
+import pandas as pd
 
-# -------------------------
-# Setup OpenAI Client
-# -------------------------
-try:
-    openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-except KeyError:
-    st.error("OpenAI API key missing. Add it to Streamlit Secrets as OPENAI_API_KEY.")
-    st.stop()
+# --------------------------
+# CONFIG
+# --------------------------
+st.set_page_config(page_title="SEO Brief Generator", layout="wide")
+st.title("SEO Blog Brief Generator")
 
-try:
-    serpapi_key = st.secrets["SERPAPI_KEY"]
-except KeyError:
-    st.error("SerpAPI key missing. Add it to Streamlit Secrets as SERPAPI_KEY.")
-    st.stop()
+# --------------------------
+# SECRETS
+# --------------------------
+openai.api_key = st.secrets["OPENAI_API_KEY"]
+SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
 
-# -------------------------
-# Helper Functions
-# -------------------------
+# --------------------------
+# INPUTS
+# --------------------------
+keyword = st.text_input("Enter target keyword:")
+uploaded_pages = st.file_uploader(
+    "Upload pages for semantic analysis (txt/html/pdf)", 
+    type=["txt","html","pdf"], 
+    accept_multiple_files=True
+)
 
-def fetch_serp_urls(keyword, num_results=3):
-    params = {"engine": "google", "q": keyword, "api_key": serpapi_key, "num": num_results}
-    resp = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
-    data = resp.json()
-    urls = [r["link"] for r in data.get("organic_results", [])[:num_results]]
-    return urls
+generate_btn = st.button("Generate SEO Brief")
 
-def fetch_paa(keyword):
-    params = {"engine": "google", "q": keyword, "api_key": serpapi_key}
-    resp = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
-    data = resp.json()
-    paa = data.get("related_questions", [])
-    return [q["question"] for q in paa][:5]
+# --------------------------
+# UTILITY FUNCTIONS
+# --------------------------
+def fetch_top_serp_article(keyword, api_key):
+    search = GoogleSearch({
+        "q": keyword,
+        "location": "United States",
+        "hl": "en",
+        "gl": "us",
+        "api_key": api_key
+    })
+    results = search.get_dict()
+    top_url = results.get("organic_results", [{}])[0].get("link", "")
+    return top_url
 
 def scrape_article(url):
     try:
-        resp = requests.get(url, timeout=5)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        headings = [h.get_text().strip() for h in soup.find_all(['h1','h2','h3'])]
-        paragraphs = " ".join([p.get_text().strip() for p in soup.find_all('p')])
-        links = [a['href'] for a in soup.find_all('a', href=True)]
-        return {"headings": headings, "paragraphs": paragraphs, "links": links}
-    except:
-        return {"headings": [], "paragraphs": "", "links": []}
+        r = requests.get(url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        headings = [h.get_text() for h in soup.find_all(["h1","h2","h3"])]
+        paragraphs = [p.get_text() for p in soup.find_all("p")]
+        text = "\n".join(paragraphs)
+        title = soup.title.string if soup.title else ""
+        meta = soup.find("meta", attrs={"name":"description"})
+        meta_desc = meta["content"] if meta else ""
+        return {"url": url, "title": title, "meta": meta_desc, "headings": headings, "text": text}
+    except Exception as e:
+        st.warning(f"Failed to scrape {url}: {e}")
+        return {"url": url, "title": "", "meta": "", "headings": [], "text": ""}
 
-def chunk_text(text, max_words=200):
-    words = text.split()
-    return [" ".join(words[i:i+max_words]) for i in range(0, len(words), max_words)]
+def parse_uploaded_file(f):
+    if f.type == "text/plain":
+        return f.read().decode()
+    elif f.type == "text/html":
+        soup = BeautifulSoup(f.read(), "html.parser")
+        return " ".join([p.get_text() for p in soup.find_all("p")])
+    elif f.type == "application/pdf":
+        import fitz  # PyMuPDF
+        pdf = fitz.open(stream=f.read(), filetype="pdf")
+        text = ""
+        for page in pdf:
+            text += page.get_text()
+        return text
+    else:
+        return ""
 
-def parse_sitemap(sitemap_url):
-    try:
-        resp = requests.get(sitemap_url, timeout=10)
-        urls = []
-        if resp.status_code == 200:
-            root = ET.fromstring(resp.text)
-            for url in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}url"):
-                loc = url.find("{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
-                if loc is not None:
-                    urls.append(loc.text)
-        return urls
-    except:
-        return []
+def generate_embeddings(text_list):
+    response = openai.Embedding.create(
+        input=text_list,
+        model="text-embedding-3-small"
+    )
+    return [d["embedding"] for d in response["data"]]
 
-def semantic_related_links(keyword, urls):
-    try:
-        kw_emb = openai_client.embeddings.create(
-            model="text-embedding-3-small", input=keyword
-        ).data[0].embedding
-        scored_urls = []
-        for url in urls:
-            try:
-                resp = requests.get(url, timeout=5)
-                soup = BeautifulSoup(resp.text, "html.parser")
-                title = soup.title.string if soup.title else url
-                emb = openai_client.embeddings.create(
-                    model="text-embedding-3-small", input=title
-                ).data[0].embedding
-                score = np.dot(kw_emb, emb) / (np.linalg.norm(kw_emb) * np.linalg.norm(emb))
-                scored_urls.append((url, score))
-            except:
-                continue
-        scored_urls.sort(key=lambda x: x[1], reverse=True)
-        return [u[0] for u in scored_urls[:5]]
-    except:
-        return []
-
-def generate_brief(keyword, urls, paa_questions, sitemap_links):
-    brief = {}
-    brief["title"] = f"{keyword.title()}: Everything You Need to Know"
-    brief["title_why"] = "Matches informational intent; clearly communicates topic to readers."
-    brief["meta"] = f"Learn what {keyword} is, how it works, and why it matters in modern data management."
-    brief["meta_why"] = "SEO meta description that explains content and improves CTR."
-
-    brief["sections"] = []
-    for url in urls:
-        article = scrape_article(url)
-        for h in article["headings"]:
-            brief["sections"].append({
-                "heading": h,
-                "what_to_write": f"Explain this topic in 150-200 words. Pull insights from {url}.",
-                "why": "Covers key topic points and semantic relevance."
-            })
-
-    brief["faqs"] = []
-    for q in paa_questions:
-        brief["faqs"].append({
-            "question": q,
-            "suggested_content": f"Write a 50-100 word answer to '{q}'",
-            "why": "Addresses additional search intent and potential rich snippets."
-        })
-
-    brief["internal_links"] = semantic_related_links(keyword, sitemap_links)
-    return brief
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 def create_docx(brief):
     doc = Document()
-    doc.add_heading(brief["title"], level=0)
-    doc.add_paragraph(f"Meta: {brief['meta']} ({brief['meta_why']})")
-    doc.add_paragraph("\nSections:\n")
+    doc.add_heading(brief["title"], 0)
+    doc.add_paragraph(brief["meta"])
     for s in brief["sections"]:
-        doc.add_heading(s["heading"], level=1)
-        doc.add_paragraph(f"{s['what_to_write']}\nWhy: {s['why']}")
-    doc.add_paragraph("\nPeople Also Ask:\n")
-    for f in brief["faqs"]:
-        doc.add_heading(f["question"], level=2)
-        doc.add_paragraph(f"{f['suggested_content']}\nWhy: {f['why']}")
-    doc.add_paragraph("\nSuggested Internal Links:\n")
-    for l in brief["internal_links"]:
-        doc.add_paragraph(l)
-    bio = BytesIO()
-    doc.save(bio)
-    bio.seek(0)
-    return bio
+        doc.add_heading(s["heading"], level=2)
+        doc.add_paragraph(s["what_to_write"])
+        doc.add_paragraph(f"Why: {s['why']}")
+    if brief["faqs"]:
+        doc.add_heading("FAQs", level=2)
+        for f in brief["faqs"]:
+            doc.add_paragraph(f"Q: {f['question']}")
+            doc.add_paragraph(f"A: {f['suggested_content']}")
+            doc.add_paragraph(f"Why: {f['why']}")
+    if brief["internal_links"]:
+        doc.add_heading("Internal Links", level=2)
+        for link in brief["internal_links"]:
+            doc.add_paragraph(f"{link[0]} (Score: {link[1]:.2f})")
+    f = BytesIO()
+    doc.save(f)
+    f.seek(0)
+    return f
 
-# -------------------------
-# Streamlit UI
-# -------------------------
-
-st.title("SEO Blog Brief Generator")
-
-keyword = st.text_input("Enter target keyword (informational intent recommended)")
-sitemap_url = st.text_input("Enter your sitemap URL (optional)")
-
-if st.button("Generate Brief"):
+# --------------------------
+# MAIN PROCESS
+# --------------------------
+if generate_btn:
     if not keyword:
-        st.warning("Please provide a keyword.")
+        st.warning("Please enter a keyword.")
     else:
         progress = st.progress(0)
-        with st.spinner("Generating brief..."):
-            # Step 1: Fetch SERP URLs
-            progress.caption("Fetching top SERP results...")
-            urls = fetch_serp_urls(keyword)
-            progress.progress(20)
+        status_text = st.empty()
+        progress_val = 0
 
-            # Step 2: Fetch People Also Ask
-            progress.caption("Fetching People Also Ask questions...")
-            paa_questions = fetch_paa(keyword)
-            progress.progress(40)
+        # 1. Fetch top SERP article
+        status_text.text("Fetching top-ranking article...")
+        top_url = fetch_top_serp_article(keyword, SERPAPI_KEY)
+        top_article = scrape_article(top_url)
+        progress_val += 20
+        progress.progress(progress_val)
 
-            # Step 3: Parse sitemap and generate semantic links
-            progress.caption("Parsing sitemap and generating semantic links...")
-            if sitemap_url:
-                sitemap_links = parse_sitemap(sitemap_url)
-                semantic_links = semantic_related_links(keyword, sitemap_links)
-            else:
-                sitemap_links = []
-                semantic_links = []
-            progress.progress(70)
+        # 2. Parse uploaded pages for semantic links
+        status_text.text("Processing uploaded pages for semantic relevance...")
+        pages_texts = [parse_uploaded_file(f) for f in uploaded_pages]
+        pages_names = [f.name for f in uploaded_pages]
 
-            # Step 4: Generate brief
-            progress.caption("Compiling brief...")
-            brief = generate_brief(keyword, urls, paa_questions, sitemap_links)
-            brief["internal_links"] = semantic_links
-            doc_file = create_docx(brief)
-            progress.progress(100)
+        if pages_texts:
+            all_embeddings = generate_embeddings(pages_texts + [keyword])
+            keyword_emb = all_embeddings[-1]
+            page_embs = all_embeddings[:-1]
+            semantic_scores = []
+            for i, emb in enumerate(page_embs):
+                score = cosine_similarity(keyword_emb, emb)
+                semantic_scores.append((pages_names[i], score))
+            top_semantic = sorted(semantic_scores, key=lambda x: x[1], reverse=True)[:5]
+        else:
+            top_semantic = []
+        progress_val += 30
+        progress.progress(progress_val)
 
-        # -------------------------
-        # Render Brief
-        # -------------------------
-        st.subheader("Suggested Title")
-        st.text_input("Title", value=brief["title"], key="title_input")
-        st.caption(f"Why: {brief['title_why']}")
+        # 3. Generate sections for brief
+        status_text.text("Generating brief sections...")
+        sections = []
+        for h in top_article["headings"]:
+            sections.append({
+                "heading": h,
+                "what_to_write": f"Explain this topic in 150-200 words. Pull insights from {top_url}.",
+                "why": "Covers key topic points and semantic relevance."
+            })
+        progress_val += 30
+        progress.progress(progress_val)
 
-        st.subheader("Meta Description")
-        st.text_area("Meta", value=brief["meta"], key="meta_input")
-        st.caption(f"Why: {brief['meta_why']}")
+        # 4. Fetch People Also Ask (stub for now)
+        status_text.text("Fetching People Also Ask...")
+        paa_questions = []  # You can integrate SERPAPI PAA here
+        faqs = [{"question": q, "suggested_content": f"Write 50-100 words for '{q}'", "why": "Covers search intent"} for q in paa_questions]
+        progress_val += 10
+        progress.progress(progress_val)
+
+        # 5. Compile brief
+        brief = {
+            "title": top_article["title"] or f"Suggested: {keyword}",
+            "meta": top_article["meta"] or f"Meta for {keyword}",
+            "sections": sections,
+            "faqs": faqs,
+            "internal_links": top_semantic
+        }
+        progress_val = 100
+        progress.progress(progress_val)
+        status_text.text("Brief generation complete!")
+
+        # 6. Display brief
+        st.subheader("SEO Brief Preview")
+        st.markdown(f"**Title:** {brief['title']}")
+        st.markdown(f"**Meta Description:** {brief['meta']}")
 
         st.subheader("Sections / Headings")
-        for i, s in enumerate(brief["sections"]):
+        for idx, s in enumerate(brief["sections"]):
             st.markdown(f"**{s['heading']}**")
-            st.text_area("What to write:", value=s["what_to_write"], key=f"section_write_{i}")
+            st.text_area(f"What to write (section {idx+1})", value=s["what_to_write"], key=f"section_{idx}")
             st.caption(f"Why: {s['why']}")
 
-        st.subheader("People Also Ask")
-        for i, f in enumerate(brief["faqs"]):
-            st.text_area("Question:", value=f["question"], key=f"paa_q_{i}")
-            st.text_area("Suggested Answer:", value=f["suggested_content"], key=f"paa_ans_{i}")
-            st.caption(f"Why: {f['why']}")
+        if brief["faqs"]:
+            st.subheader("FAQs")
+            for idx, f in enumerate(brief["faqs"]):
+                st.text_area(f"FAQ: {f['question']} (FAQ {idx+1})", value=f["suggested_content"], key=f"faq_{idx}")
+                st.caption(f"Why: {f['why']}")
 
         if brief["internal_links"]:
-            st.subheader("Suggested Internal Links")
-            for i, link in enumerate(brief["internal_links"]):
-                st.text_input("Internal link:", value=link, key=f"internal_link_{i}")
-            st.caption("These links are semantically related to the target keyword and strengthen topical authority.")
+            st.subheader("Recommended Internal Links")
+            for name, score in brief["internal_links"]:
+                st.markdown(f"- {name} (Score: {score:.2f})")
 
-        st.subheader("Preview & Download Brief")
-        st.download_button("Download Brief (.docx)", doc_file, file_name="seo_brief.docx")
-        iframe_url = st.text_input("Google Docs shareable URL for iframe preview", "")
-        if iframe_url:
-            components.iframe(iframe_url.replace("/edit","/preview"), height=600, scrolling=True)
-
-        st.success("Brief generation complete!")
+        # 7. Download .docx
+        doc_file = create_docx(brief)
+        st.download_button(
+            "Download SEO Brief (.docx)", 
+            doc_file, 
+            file_name=f"{keyword}_seo_brief.docx"
+        )
