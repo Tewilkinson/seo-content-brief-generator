@@ -58,7 +58,7 @@ def generate_brief(keyword, urls, paa_questions):
     """Generate a full SEO brief structure"""
     brief = {}
 
-    # Suggest title aligned with informational intent
+    # Suggested title aligned with informational intent
     brief["title"] = f"{keyword.title()}: Everything You Need to Know"
     brief["title_why"] = "Matches informational intent; clearly communicates topic to readers."
 
@@ -94,11 +94,13 @@ def generate_brief(keyword, urls, paa_questions):
 st.title("SEO Blog Brief Generator")
 
 keyword = st.text_input("Enter target keyword (informational intent recommended)")
-serpapi_key = st.text_input("Enter SerpAPI Key", type="password")
+
+# Get SerpAPI key from Streamlit Secrets
+serpapi_key = st.secrets["SERPAPI_KEY"]
 
 if st.button("Generate Brief"):
-    if not keyword or not serpapi_key:
-        st.warning("Please provide both a keyword and SerpAPI key.")
+    if not keyword:
+        st.warning("Please provide a keyword.")
     else:
         st.info("Fetching SERP results and People Also Ask...")
         urls = fetch_serp_urls(keyword, serpapi_key)
