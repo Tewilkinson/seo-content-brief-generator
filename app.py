@@ -2,39 +2,24 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import openai
+from googlesearch_results import GoogleSearch
 from urllib.parse import urlparse
-import textwrap
-
-# Optional: SerpAPI client
-from serpapi import GoogleSearch
 
 # -------------------------
 # Helper Functions
 # -------------------------
 
 def fetch_serp_urls(keyword, api_key, num_results=3):
-    """Fetch top SERP URLs using SerpAPI"""
-    params = {
-        "engine": "google",
-        "q": keyword,
-        "api_key": api_key,
-        "num": num_results
-    }
-    search = GoogleSearch(params)
-    results = search.get_dict()
+    """Fetch top SERP URLs using GoogleSearchResults client"""
+    client = GoogleSearch({"q": keyword, "engine": "google", "api_key": api_key})
+    results = client.get_dict()
     urls = [r["link"] for r in results.get("organic_results", [])[:num_results]]
     return urls
 
 def fetch_paa(keyword, api_key):
-    """Fetch People Also Ask using SerpAPI"""
-    params = {
-        "engine": "google",
-        "q": keyword,
-        "api_key": api_key
-    }
-    search = GoogleSearch(params)
-    results = search.get_dict()
+    """Fetch People Also Ask using GoogleSearchResults client"""
+    client = GoogleSearch({"q": keyword, "engine": "google", "api_key": api_key})
+    results = client.get_dict()
     paa = results.get("related_questions", [])
     questions = [q["question"] for q in paa]
     return questions[:5]
