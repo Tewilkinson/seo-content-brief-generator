@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import requests
 import openai
 import numpy as np
+import pandas as pd
 from docx import Document
 from io import BytesIO
 import streamlit.components.v1 as components
@@ -23,11 +24,7 @@ SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
 # INPUTS
 # --------------------------
 keyword = st.text_input("Enter target keyword:")
-uploaded_pages = st.file_uploader(
-    "Upload pages for semantic analysis (txt/html/pdf)", 
-    type=["txt","html","pdf"], 
-    accept_multiple_files=True
-)
+uploaded_csv = st.file_uploader("Upload CSV of pages (column: 'url')", type=["csv"])
 generate_btn = st.button("Generate SEO Brief")
 
 # --------------------------
@@ -53,6 +50,7 @@ def fetch_top_serp_article(keyword, api_key):
         return ""
 
 def scrape_article(url):
+    """Scrape headings and paragraphs from a URL."""
     try:
         r = requests.get(url, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
@@ -66,22 +64,6 @@ def scrape_article(url):
     except Exception as e:
         st.warning(f"Failed to scrape {url}: {e}")
         return {"url": url, "title": "", "meta": "", "headings": [], "text": ""}
-
-def parse_uploaded_file(f):
-    if f.type == "text/plain":
-        return f.read().decode()
-    elif f.type == "text/html":
-        soup = BeautifulSoup(f.read(), "html.parser")
-        return " ".join([p.get_text() for p in soup.find_all("p")])
-    elif f.type == "application/pdf":
-        import fitz  # PyMuPDF
-        pdf = fitz.open(stream=f.read(), filetype="pdf")
-        text = ""
-        for page in pdf:
-            text += page.get_text()
-        return text
-    else:
-        return ""
 
 def generate_embeddings(text_list):
     response = openai.Embedding.create(
@@ -134,19 +116,21 @@ if generate_btn:
         progress_val += 20
         progress.progress(progress_val)
 
-        # 2. Parse uploaded pages for semantic links
-        status_text.text("Processing uploaded pages for semantic relevance...")
-        pages_texts = [parse_uploaded_file(f) for f in uploaded_pages]
-        pages_names = [f.name for f in uploaded_pages]
-
-        if pages_texts:
+        # 2. Parse uploaded CSV pages
+        status_text.text("Processing uploaded CSV pages for semantic relevance...")
+        if uploaded_csv:
+            pages_df = pd.read_csv(uploaded_csv)
+            if "url" not in pages_df.columns:
+                st.error("CSV must have a 'url' column.")
+                st.stop()
+            pages_texts = [scrape_article(url)["text"] for url in pages_df["url"]]
             all_embeddings = generate_embeddings(pages_texts + [keyword])
             keyword_emb = all_embeddings[-1]
             page_embs = all_embeddings[:-1]
             semantic_scores = []
             for i, emb in enumerate(page_embs):
                 score = cosine_similarity(keyword_emb, emb)
-                semantic_scores.append((pages_names[i], score))
+                semantic_scores.append((pages_df["url"][i], score))
             top_semantic = sorted(semantic_scores, key=lambda x: x[1], reverse=True)[:5]
         else:
             top_semantic = []
@@ -165,7 +149,7 @@ if generate_btn:
         progress_val += 30
         progress.progress(progress_val)
 
-        # 4. PAA placeholder
+        # 4. Placeholder for PAA
         status_text.text("Fetching People Also Ask...")
         paa_questions = []  # To integrate SERPAPI PAA later
         faqs = [{"question": q, "suggested_content": f"Write 50-100 words for '{q}'", "why": "Covers search intent"} for q in paa_questions]
