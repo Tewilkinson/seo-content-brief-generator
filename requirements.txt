@@ -6,4 +6,3 @@ openai>=1.32.0
 Pillow==9.5.0
 python-docx>=0.8.12
 numpy>=1.21.0
-googlesearch-results>=2.1.1
