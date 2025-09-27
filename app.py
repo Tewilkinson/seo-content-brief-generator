@@ -6,7 +6,7 @@ import openai
 import numpy as np
 from docx import Document
 from io import BytesIO
-import pandas as pd
+import streamlit.components.v1 as components
 
 # --------------------------
 # CONFIG
@@ -29,7 +29,6 @@ uploaded_pages = st.file_uploader(
     type=["txt","html","pdf"], 
     accept_multiple_files=True
 )
-
 generate_btn = st.button("Generate SEO Brief")
 
 # --------------------------
@@ -151,7 +150,7 @@ if generate_btn:
         # 3. Generate sections for brief
         status_text.text("Generating brief sections...")
         sections = []
-        for h in top_article["headings"]:
+        for idx, h in enumerate(top_article["headings"]):
             sections.append({
                 "heading": h,
                 "what_to_write": f"Explain this topic in 150-200 words. Pull insights from {top_url}.",
@@ -160,9 +159,9 @@ if generate_btn:
         progress_val += 30
         progress.progress(progress_val)
 
-        # 4. Fetch People Also Ask (stub for now)
+        # 4. PAA placeholder
         status_text.text("Fetching People Also Ask...")
-        paa_questions = []  # You can integrate SERPAPI PAA here
+        paa_questions = []  # To integrate SERPAPI PAA later
         faqs = [{"question": q, "suggested_content": f"Write 50-100 words for '{q}'", "why": "Covers search intent"} for q in paa_questions]
         progress_val += 10
         progress.progress(progress_val)
@@ -179,7 +178,7 @@ if generate_btn:
         progress.progress(progress_val)
         status_text.text("Brief generation complete!")
 
-        # 6. Display brief
+        # 6. Display brief preview
         st.subheader("SEO Brief Preview")
         st.markdown(f"**Title:** {brief['title']}")
         st.markdown(f"**Meta Description:** {brief['meta']}")
@@ -208,3 +207,11 @@ if generate_btn:
             doc_file, 
             file_name=f"{keyword}_seo_brief.docx"
         )
+
+        # 8. Google Docs iframe preview
+        st.subheader("Preview SEO Brief in Google Docs")
+        gdoc_url = st.text_input("Enter shareable Google Docs link (view only):", value="")
+        if gdoc_url:
+            if "edit" in gdoc_url:
+                gdoc_url = gdoc_url.replace("/edit", "/preview")
+            components.html(f'<iframe src="{gdoc_url}" width="100%" height="600px" style="border:none;"></iframe>', height=600)
