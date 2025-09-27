@@ -1,16 +1,28 @@
 # app.py
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import numpy as np
 from openai import OpenAI
+from docx import Document
+from io import BytesIO
 
 # -------------------------
 # Setup OpenAI Client
 # -------------------------
-openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-serpapi_key = st.secrets["SERPAPI_KEY"]
+try:
+    openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+except KeyError:
+    st.error("OpenAI API key missing. Add it to Streamlit Secrets as OPENAI_API_KEY.")
+    st.stop()
+
+try:
+    serpapi_key = st.secrets["SERPAPI_KEY"]
+except KeyError:
+    st.error("SerpAPI key missing. Add it to Streamlit Secrets as SERPAPI_KEY.")
+    st.stop()
 
 # -------------------------
 # Helper Functions
@@ -38,8 +50,7 @@ def scrape_article(url):
         paragraphs = " ".join([p.get_text().strip() for p in soup.find_all('p')])
         links = [a['href'] for a in soup.find_all('a', href=True)]
         return {"headings": headings, "paragraphs": paragraphs, "links": links}
-    except Exception as e:
-        st.warning(f"Error scraping {url}: {e}")
+    except:
         return {"headings": [], "paragraphs": "", "links": []}
 
 def chunk_text(text, max_words=200):
@@ -57,28 +68,30 @@ def parse_sitemap(sitemap_url):
                 if loc is not None:
                     urls.append(loc.text)
         return urls
-    except Exception as e:
-        st.warning(f"Error parsing sitemap: {e}")
+    except:
         return []
 
 def semantic_related_links(keyword, urls):
     try:
-        kw_emb = openai_client.embeddings.create(model="text-embedding-3-small", input=keyword).data[0].embedding
+        kw_emb = openai_client.embeddings.create(
+            model="text-embedding-3-small", input=keyword
+        ).data[0].embedding
         scored_urls = []
         for url in urls:
             try:
                 resp = requests.get(url, timeout=5)
                 soup = BeautifulSoup(resp.text, "html.parser")
                 title = soup.title.string if soup.title else url
-                emb = openai_client.embeddings.create(model="text-embedding-3-small", input=title).data[0].embedding
+                emb = openai_client.embeddings.create(
+                    model="text-embedding-3-small", input=title
+                ).data[0].embedding
                 score = np.dot(kw_emb, emb) / (np.linalg.norm(kw_emb) * np.linalg.norm(emb))
                 scored_urls.append((url, score))
             except:
                 continue
         scored_urls.sort(key=lambda x: x[1], reverse=True)
         return [u[0] for u in scored_urls[:5]]
-    except Exception as e:
-        st.warning(f"Error generating semantic links: {e}")
+    except:
         return []
 
 def generate_brief(keyword, urls, paa_questions, sitemap_links):
@@ -109,6 +122,26 @@ def generate_brief(keyword, urls, paa_questions, sitemap_links):
     brief["internal_links"] = semantic_related_links(keyword, sitemap_links)
     return brief
 
+def create_docx(brief):
+    doc = Document()
+    doc.add_heading(brief["title"], level=0)
+    doc.add_paragraph(f"Meta: {brief['meta']} ({brief['meta_why']})")
+    doc.add_paragraph("\nSections:\n")
+    for s in brief["sections"]:
+        doc.add_heading(s["heading"], level=1)
+        doc.add_paragraph(f"{s['what_to_write']}\nWhy: {s['why']}")
+    doc.add_paragraph("\nPeople Also Ask:\n")
+    for f in brief["faqs"]:
+        doc.add_heading(f["question"], level=2)
+        doc.add_paragraph(f"{f['suggested_content']}\nWhy: {f['why']}")
+    doc.add_paragraph("\nSuggested Internal Links:\n")
+    for l in brief["internal_links"]:
+        doc.add_paragraph(l)
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio
+
 # -------------------------
 # Streamlit UI
 # -------------------------
@@ -122,11 +155,12 @@ if st.button("Generate Brief"):
     if not keyword:
         st.warning("Please provide a keyword.")
     else:
-        st.info("Fetching SERP results, People Also Ask, and semantic internal links...")
-        urls = fetch_serp_urls(keyword)
-        paa_questions = fetch_paa(keyword)
-        sitemap_links = parse_sitemap(sitemap_url) if sitemap_url else []
-        brief = generate_brief(keyword, urls, paa_questions, sitemap_links)
+        with st.spinner("Generating brief..."):
+            urls = fetch_serp_urls(keyword)
+            paa_questions = fetch_paa(keyword)
+            sitemap_links = parse_sitemap(sitemap_url) if sitemap_url else []
+            brief = generate_brief(keyword, urls, paa_questions, sitemap_links)
+            doc_file = create_docx(brief)
 
         # Title
         st.subheader("Suggested Title")
@@ -142,14 +176,14 @@ if st.button("Generate Brief"):
         st.subheader("Sections / Headings")
         for i, s in enumerate(brief["sections"]):
             st.markdown(f"**{s['heading']}**")
-            st.text_area("What to write:", value=s["what_to_write"], key=f"write_{i}")
+            st.text_area("What to write:", value=s["what_to_write"], key=f"section_{i}_write")
             st.caption(f"Why: {s['why']}")
 
         # PAA
         st.subheader("People Also Ask")
         for i, f in enumerate(brief["faqs"]):
-            st.text_area("Question:", value=f["question"], key=f"q_{i}")
-            st.text_area("Suggested Answer:", value=f["suggested_content"], key=f"ans_{i}")
+            st.text_area("Question:", value=f["question"], key=f"paa_q_{i}")
+            st.text_area("Suggested Answer:", value=f["suggested_content"], key=f"paa_ans_{i}")
             st.caption(f"Why: {f['why']}")
 
         # Internal links
@@ -159,4 +193,13 @@ if st.button("Generate Brief"):
                 st.markdown(f"- [{link}]({link})", key=f"link_{i}")
             st.caption("These links are semantically related to the target keyword and strengthen topical authority.")
 
-        st.success("Brief generation complete! You can now edit and export to Google Docs or .docx.")
+        # Docx download + iframe preview
+        st.subheader("Preview & Download Brief")
+        st.download_button("Download Brief (.docx)", doc_file, file_name="seo_brief.docx")
+        # iframe preview via Google Docs (requires uploading the doc to Google Drive manually or via API)
+        st.info("Preview iframe requires Google Docs shareable link. Replace below URL with your doc's link if available.")
+        iframe_url = st.text_input("Google Docs shareable URL for iframe preview", "")
+        if iframe_url:
+            components.iframe(iframe_url.replace("/edit","/preview"), height=600, scrolling=True)
+
+        st.success("Brief generation complete!")
