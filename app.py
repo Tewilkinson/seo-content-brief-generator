@@ -1,6 +1,5 @@
 import streamlit as st
 from bs4 import BeautifulSoup
-from googlesearch_results import GoogleSearch
 import requests
 import openai
 import numpy as np
@@ -35,16 +34,23 @@ generate_btn = st.button("Generate SEO Brief")
 # UTILITY FUNCTIONS
 # --------------------------
 def fetch_top_serp_article(keyword, api_key):
-    search = GoogleSearch({
+    """Fetch top-ranking US SERP article URL using SerpAPI."""
+    params = {
+        "engine": "google",
         "q": keyword,
         "location": "United States",
         "hl": "en",
         "gl": "us",
         "api_key": api_key
-    })
-    results = search.get_dict()
-    top_url = results.get("organic_results", [{}])[0].get("link", "")
-    return top_url
+    }
+    try:
+        r = requests.get("https://serpapi.com/search", params=params, timeout=10)
+        data = r.json()
+        top_url = data.get("organic_results", [{}])[0].get("link", "")
+        return top_url
+    except Exception as e:
+        st.warning(f"Failed to fetch top SERP article: {e}")
+        return ""
 
 def scrape_article(url):
     try:
