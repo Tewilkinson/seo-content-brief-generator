@@ -164,19 +164,19 @@ if st.button("Generate Brief"):
 
         # Title
         st.subheader("Suggested Title")
-        st.text_input("Title", value=brief["title"], key="title")
+        st.text_input("Title", value=brief["title"], key="title_input")
         st.caption(f"Why: {brief['title_why']}")
 
         # Meta
         st.subheader("Meta Description")
-        st.text_area("Meta", value=brief["meta"], key="meta")
+        st.text_area("Meta", value=brief["meta"], key="meta_input")
         st.caption(f"Why: {brief['meta_why']}")
 
         # Sections
         st.subheader("Sections / Headings")
         for i, s in enumerate(brief["sections"]):
             st.markdown(f"**{s['heading']}**")
-            st.text_area("What to write:", value=s["what_to_write"], key=f"section_{i}_write")
+            st.text_area("What to write:", value=s["what_to_write"], key=f"section_write_{i}")
             st.caption(f"Why: {s['why']}")
 
         # PAA
@@ -190,14 +190,12 @@ if st.button("Generate Brief"):
         if brief["internal_links"]:
             st.subheader("Suggested Internal Links")
             for i, link in enumerate(brief["internal_links"]):
-                st.markdown(f"- [{link}]({link})", key=f"link_{i}")
+                st.text_input("Internal link:", value=link, key=f"internal_link_{i}")
             st.caption("These links are semantically related to the target keyword and strengthen topical authority.")
 
         # Docx download + iframe preview
         st.subheader("Preview & Download Brief")
         st.download_button("Download Brief (.docx)", doc_file, file_name="seo_brief.docx")
-        # iframe preview via Google Docs (requires uploading the doc to Google Drive manually or via API)
-        st.info("Preview iframe requires Google Docs shareable link. Replace below URL with your doc's link if available.")
         iframe_url = st.text_input("Google Docs shareable URL for iframe preview", "")
         if iframe_url:
             components.iframe(iframe_url.replace("/edit","/preview"), height=600, scrolling=True)
