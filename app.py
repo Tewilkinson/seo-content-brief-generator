@@ -2,25 +2,34 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from googlesearch_results import GoogleSearch
-from urllib.parse import urlparse
 
 # -------------------------
 # Helper Functions
 # -------------------------
 
 def fetch_serp_urls(keyword, api_key, num_results=3):
-    """Fetch top SERP URLs using GoogleSearchResults client"""
-    client = GoogleSearch({"q": keyword, "engine": "google", "api_key": api_key})
-    results = client.get_dict()
-    urls = [r["link"] for r in results.get("organic_results", [])[:num_results]]
+    """Fetch top SERP URLs directly from SerpAPI JSON endpoint"""
+    params = {
+        "engine": "google",
+        "q": keyword,
+        "api_key": api_key,
+        "num": num_results
+    }
+    resp = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
+    data = resp.json()
+    urls = [r["link"] for r in data.get("organic_results", [])[:num_results]]
     return urls
 
 def fetch_paa(keyword, api_key):
-    """Fetch People Also Ask using GoogleSearchResults client"""
-    client = GoogleSearch({"q": keyword, "engine": "google", "api_key": api_key})
-    results = client.get_dict()
-    paa = results.get("related_questions", [])
+    """Fetch People Also Ask questions directly from SerpAPI JSON endpoint"""
+    params = {
+        "engine": "google",
+        "q": keyword,
+        "api_key": api_key
+    }
+    resp = requests.get("https://serpapi.com/search.json", params=params, timeout=10)
+    data = resp.json()
+    paa = data.get("related_questions", [])
     questions = [q["question"] for q in paa]
     return questions[:5]
 
@@ -38,6 +47,7 @@ def scrape_article(url):
         return {"headings": [], "paragraphs": "", "links": []}
 
 def chunk_text(text, max_words=200):
+    """Split text into chunks of up to max_words words"""
     words = text.split()
     chunks = []
     for i in range(0, len(words), max_words):
