@@ -155,45 +155,64 @@ if st.button("Generate Brief"):
     if not keyword:
         st.warning("Please provide a keyword.")
     else:
+        progress = st.progress(0)
         with st.spinner("Generating brief..."):
+            # Step 1: Fetch SERP URLs
+            progress.caption("Fetching top SERP results...")
             urls = fetch_serp_urls(keyword)
-            paa_questions = fetch_paa(keyword)
-            sitemap_links = parse_sitemap(sitemap_url) if sitemap_url else []
-            brief = generate_brief(keyword, urls, paa_questions, sitemap_links)
-            doc_file = create_docx(brief)
+            progress.progress(20)
 
-        # Title
+            # Step 2: Fetch People Also Ask
+            progress.caption("Fetching People Also Ask questions...")
+            paa_questions = fetch_paa(keyword)
+            progress.progress(40)
+
+            # Step 3: Parse sitemap and generate semantic links
+            progress.caption("Parsing sitemap and generating semantic links...")
+            if sitemap_url:
+                sitemap_links = parse_sitemap(sitemap_url)
+                semantic_links = semantic_related_links(keyword, sitemap_links)
+            else:
+                sitemap_links = []
+                semantic_links = []
+            progress.progress(70)
+
+            # Step 4: Generate brief
+            progress.caption("Compiling brief...")
+            brief = generate_brief(keyword, urls, paa_questions, sitemap_links)
+            brief["internal_links"] = semantic_links
+            doc_file = create_docx(brief)
+            progress.progress(100)
+
+        # -------------------------
+        # Render Brief
+        # -------------------------
         st.subheader("Suggested Title")
         st.text_input("Title", value=brief["title"], key="title_input")
         st.caption(f"Why: {brief['title_why']}")
 
-        # Meta
         st.subheader("Meta Description")
         st.text_area("Meta", value=brief["meta"], key="meta_input")
         st.caption(f"Why: {brief['meta_why']}")
 
-        # Sections
         st.subheader("Sections / Headings")
         for i, s in enumerate(brief["sections"]):
             st.markdown(f"**{s['heading']}**")
             st.text_area("What to write:", value=s["what_to_write"], key=f"section_write_{i}")
             st.caption(f"Why: {s['why']}")
 
-        # PAA
         st.subheader("People Also Ask")
         for i, f in enumerate(brief["faqs"]):
             st.text_area("Question:", value=f["question"], key=f"paa_q_{i}")
             st.text_area("Suggested Answer:", value=f["suggested_content"], key=f"paa_ans_{i}")
             st.caption(f"Why: {f['why']}")
 
-        # Internal links
         if brief["internal_links"]:
             st.subheader("Suggested Internal Links")
             for i, link in enumerate(brief["internal_links"]):
                 st.text_input("Internal link:", value=link, key=f"internal_link_{i}")
             st.caption("These links are semantically related to the target keyword and strengthen topical authority.")
 
-        # Docx download + iframe preview
         st.subheader("Preview & Download Brief")
         st.download_button("Download Brief (.docx)", doc_file, file_name="seo_brief.docx")
         iframe_url = st.text_input("Google Docs shareable URL for iframe preview", "")
