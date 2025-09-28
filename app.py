@@ -1,142 +1,125 @@
 import streamlit as st
 import pandas as pd
-import requests
-from openai import OpenAI
 from serpapi import GoogleSearch
+from openai import OpenAI
 from bs4 import BeautifulSoup
+import requests
 from urllib.parse import urlparse
 import tiktoken
-import time
 
-# --- Streamlit Secrets ---
-openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=st.secrets['OPENAI_API_KEY'])
+SERPAPI_KEY = st.secrets['SERPAPI_KEY']
 
 st.set_page_config(page_title="SEO Content Brief Generator", layout="wide")
 
-# --- Helper functions ---
-def fetch_top_pages(keyword, num=2):
-    params = {
-        "engine": "google",
-        "q": keyword,
-        "num": num,
-        "api_key": SERPAPI_KEY,
-        "gl": "us"
-    }
-    search = GoogleSearch(params)
-    results = search.get_dict()
-    pages = []
-    for r in results.get("organic_results", []):
-        pages.append(r["link"])
-    return pages[:num]
+# Tabs
+tab1, tab2 = st.tabs(["Generate SEO Brief", "Top Ranking Analysis"])
 
-def extract_page_metadata(url):
-    resp = requests.get(url, timeout=10)
-    soup = BeautifulSoup(resp.text, "html.parser")
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    h1 = soup.find("h1")
-    h2s = [h2.get_text(strip=True) for h2 in soup.find_all("h2")]
-    outlinks = [a["href"] for a in soup.find_all("a", href=True) if urlparse(a["href"]).netloc]
-    return {
-        "meta_description": meta_desc["content"] if meta_desc else "",
-        "h1": h1.get_text(strip=True) if h1 else "",
-        "h2": h2s,
-        "outlinks": outlinks
-    }
+# ---------------------- TAB 1: SEO BRIEF ----------------------
+with tab1:
+    st.header("SEO Content Brief Generator")
 
-def generate_ai_content(prompt, max_tokens=200):
-    resp = openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-        max_tokens=max_tokens
-    )
-    return resp.choices[0].message.content.strip()
+    uploaded_file = st.file_uploader("Upload a CSV of URLs", type=['csv'])
+    urls_list = []
+    if uploaded_file:
+        df_urls = pd.read_csv(uploaded_file)
+        urls_list = df_urls.iloc[:,0].dropna().tolist()
+        st.success(f"{len(urls_list)} URLs loaded.")
 
-def semantic_internal_links(urls):
-    # Simple example: extract unique keywords from URLs for internal linking
-    links = set()
-    for u in urls:
-        path = urlparse(u).path.strip("/").split("/")
-        for p in path:
-            if p and p.lower() not in ["en", "us", "blog", "articles", "fundamentals"]:
-                links.add(p.replace("-", " "))
-    return list(links)
+    keyword = st.text_input("Enter Primary Keyword")
 
-# --- Sidebar ---
-st.sidebar.title("SEO Content Brief Generator")
-uploaded_csv = st.sidebar.file_uploader("Upload CSV (keywords)", type=["csv"])
-
-# --- Main ---
-if uploaded_csv:
-    df_keywords = pd.read_csv(uploaded_csv)
-    if "keyword" not in df_keywords.columns:
-        st.error("CSV must have a 'keyword' column")
-    else:
-        keywords = df_keywords["keyword"].tolist()
-        st.title("SEO Content Briefs")
-        
+    if st.button("Generate Brief"):
         progress = st.progress(0)
-        all_briefs = []
+        stages = ["Fetching SERP data", "Extracting top pages", "Generating semantic internal links",
+                  "Generating H2 sections", "Generating FAQs", "Compiling brief"]
 
-        for i, keyword in enumerate(keywords):
-            progress.progress(int((i / len(keywords)) * 100))
-            st.subheader(f"Keyword: {keyword}")
+        brief = {}
+        step = 0
 
-            # Stage 1: Fetch Top Pages
-            top_pages = fetch_top_pages(keyword)
-            st.text(f"Top pages: {top_pages}")
+        # Stage 1: Fetch SERP Data
+        progress.progress(step/len(stages))
+        search = GoogleSearch({"q": keyword, "location": "United States", "api_key": SERPAPI_KEY})
+        serp_results = search.get_dict()
+        step += 1
+        progress.progress(step/len(stages))
 
-            # Stage 2: Extract metadata
-            metadata_list = []
-            for page in top_pages:
-                meta = extract_page_metadata(page)
-                metadata_list.append(meta)
-                time.sleep(0.5)
-            
-            # Stage 3: Generate AI brief
-            brief = {
-                "Title": generate_ai_content(f"Write SEO optimized title for: {keyword}"),
-                "Meta description": generate_ai_content(f"Write unique meta description for: {keyword}"),
-                "H1": generate_ai_content(f"Write H1 tag for: {keyword}"),
-                "Navigation sidebar": "\n".join([h2 for meta in metadata_list for h2 in meta["h2"]]),
-                "People also asks": generate_ai_content(f"Generate People Also Ask questions for: {keyword}"),
-                "Top ranking pages": ", ".join(top_pages),
-                "URL structure": f"https://www.snowflake.com/en/fundamentals/{keyword.replace(' ', '-')}",
-                "Est. Number of outlinks": sum([len(meta["outlinks"]) for meta in metadata_list]),
-                "Internal link recommendations": ", ".join(semantic_internal_links(top_pages)),
-                "Number of page sections": max([len(meta["h2"]) for meta in metadata_list]) + 1,
-            }
+        # Stage 2: Extract Top Pages and PAA
+        top_pages = []
+        people_also_ask = []
+        for res in serp_results.get('organic_results', [])[:2]:
+            top_pages.append(res['link'])
+        for paa in serp_results.get('related_questions', []):
+            people_also_ask.append(paa['question'])
+        step += 1
+        progress.progress(step/len(stages))
 
-            # H2 Sections + What to write
-            for j in range(brief["Number of page sections"]):
-                h2_key = f"H2 section {j+1}"
-                prompt = f"Generate a recommended H2 section for {keyword}, provide 50-100 words of content."
-                brief[h2_key] = generate_ai_content(prompt)
+        # Stage 3: Generate Semantic Internal Links (placeholder logic)
+        internal_links = []
+        for url in urls_list:
+            if keyword.lower() in url.lower():
+                internal_links.append(url)
+        step += 1
+        progress.progress(step/len(stages))
 
-            # FAQs
-            brief["FAQs"] = generate_ai_content(f"Generate 3 FAQs with answers for {keyword}")
-
-            # Suggested cluster topics
-            brief["Consider writing topics on"] = generate_ai_content(
-                f"Analyze the top ranking pages for {keyword} and suggest related content topics"
+        # Stage 4: Generate H2 Sections
+        h2_sections = [f"{keyword} Section {i+1}" for i in range(5)]
+        h2_content = []
+        for idx, section in enumerate(h2_sections):
+            resp = openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role":"user","content":f"Write 150 words for section: {section}"}]
             )
+            h2_content.append(resp.choices[0].message.content)
+        step += 1
+        progress.progress(step/len(stages))
 
-            all_briefs.append(brief)
+        # Stage 5: Generate FAQs
+        faqs = []
+        for q in people_also_ask[:5]:
+            resp = openai_client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role":"user","content":f"Provide a concise answer for FAQ: {q}"}]
+            )
+            faqs.append({'question': q, 'answer': resp.choices[0].message.content})
+        step += 1
+        progress.progress(step/len(stages))
 
-        progress.progress(100)
+        # Stage 6: Compile Brief
+        brief_table = pd.DataFrame({
+            'Section': ["Title", "Meta Description", "H1", "Navigation Sidebar", "People Also Ask", 
+                        "Top Ranking Pages", "URL Structure", "Estimated Outlinks", "Internal Link Recommendations",
+                        "Number of Page Sections"] + h2_sections + ["FAQs"],
+            'Output': [
+                f"SEO Optimized Title for {keyword}",
+                f"Meta description for {keyword}",
+                f"H1 including {keyword}",
+                f"- " + "\n- ".join(h2_sections),
+                "\n".join(people_also_ask),
+                "\n".join(top_pages),
+                f"www.example.com/{keyword.replace(' ', '-').lower()}",
+                len(top_pages)*10,  # placeholder for outlinks
+                "\n".join(internal_links),
+                len(h2_sections),
+            ] + h2_content + ["\n".join([f"{f['question']}: {f['answer']}" for f in faqs])]
+        })
+        step += 1
+        progress.progress(step/len(stages))
 
-        # Display briefs in table
-        st.subheader("Generated SEO Briefs")
-        df_briefs = pd.DataFrame(all_briefs)
-        st.data_editor(df_briefs, height=600, use_container_width=True)
+        st.success("SEO Brief Generated")
+        st.dataframe(brief_table, height=700)
 
-        # Analysis tab
-        st.subheader("Top Ranking Articles Analysis")
-        for keyword, brief in zip(keywords, all_briefs):
-            st.markdown(f"### Keyword: {keyword}")
-            st.text(f"Top Pages: {brief['Top ranking pages']}")
-            st.text(f"H1: {brief['H1']}")
-            st.text(f"Number of H2 Sections: {brief['Number of page sections']}")
-            st.text(f"Estimated Outlinks: {brief['Est. Number of outlinks']}")
-            st.text(f"Internal link recommendations: {brief['Internal link recommendations']}")
+# ---------------------- TAB 2: TOP RANKING ANALYSIS ----------------------
+with tab2:
+    st.header("Top Ranking Articles Analysis")
+    if urls_list:
+        analysis_table = pd.DataFrame({
+            'URL': top_pages,
+            'Title': ["Title Placeholder"]*len(top_pages),
+            'Meta Description': ["Meta Placeholder"]*len(top_pages),
+            'H2 Sections': [", ".join(h2_sections)]*len(top_pages),
+            'Outlinks': [10]*len(top_pages),  # Placeholder
+        })
+        st.dataframe(analysis_table)
+    else:
+        st.info("Upload a CSV and generate a brief first.")
