@@ -264,9 +264,9 @@ with tab1:
 
             # Stage 4: Draft H2 sections (LLM)
             st.info(stages[i])
-            h2_sections_prompt = f (
+            h2_sections_prompt = f ""
 You are creating an SEO content outline.
-Primary keyword: "{st.session_state.keyword}")
+Primary keyword: "{st.session_state.keyword}""
 
 Propose 6–8 highly relevant H2 sections that comprehensively cover the topic.
 Return them as a simple bullet list with no extra commentary.
