@@ -4,13 +4,13 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 
-# ---------- Page config ----------
+# ---------------------- PAGE CONFIG ----------------------
 st.set_page_config(page_title="SEO Content Brief Generator", layout="wide")
 st.title("SEO Content Brief Generator")
 
-# ---------- Secrets & client setup ----------
+# ---------------------- SECRETS ----------------------
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
 SERPAPI_KEY = st.secrets.get("SERPAPI_KEY", "")
 
@@ -21,16 +21,15 @@ try:
 except Exception:
     openai_client = None
 
-# SerpAPI (via google-search-results package)
+# SerpAPI (provided by package: google-search-results)
 _serpapi_available = True
 try:
-    # NOTE: The python package is google-search-results, but import stays serpapi.GoogleSearch
-    from serpapi import GoogleSearch  # provided by package: google-search-results
+    from serpapi import GoogleSearch
 except Exception:
     _serpapi_available = False
     GoogleSearch = None  # type: ignore
 
-# ---------- Session state ----------
+# ---------------------- SESSION STATE ----------------------
 def ss_init():
     defaults = {
         "uploaded_urls": [],
@@ -53,28 +52,37 @@ def ss_init():
 
 ss_init()
 
-# ---------- Helpers ----------
-def fetch_serp(keyword: str, location: str = "United States") -> Dict[str, Any]:
-    if not _serpapi_available:
-        st.error(
-            "SerpAPI client not found. Install the package `google-search-results` in requirements.txt.\n"
-            "Keep your import as: `from serpapi import GoogleSearch`."
+# ---------------------- HELPERS ----------------------
+def generate_openai_text(prompt: str, model: str = "gpt-4o-mini", max_tokens: int = 400, temperature: float = 0.7) -> str:
+    if not openai_client:
+        return "(OpenAI key missing in secrets)"
+    try:
+        resp = openai_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        return f"(OpenAI error: {e})"
+
+def fetch_serp(keyword: str, location: str) -> Dict[str, Any]:
+    if not _serpapi_available:
+        st.error("SerpAPI client not found. Add 'google-search-results' to requirements.txt. Keep import: 'from serpapi import GoogleSearch'.")
         return {}
     if not SERPAPI_KEY:
-        st.error("Missing SERPAPI_KEY in `st.secrets`.")
+        st.error("Missing SERPAPI_KEY in st.secrets.")
         return {}
-
     try:
-        params = {"q": keyword, "location": location, "api_key": SERPAPI_KEY}
-        search = GoogleSearch(params)
+        search = GoogleSearch({"q": keyword, "location": location, "api_key": SERPAPI_KEY})
         return search.get_dict() or {}
     except Exception as e:
         st.error(f"SerpAPI error: {e}")
         return {}
 
 def extract_top_pages(serp: Dict[str, Any], n: int = 10) -> List[str]:
-    links = []
+    links: List[str] = []
     for res in serp.get("organic_results", [])[:n]:
         link = res.get("link")
         if link:
@@ -82,28 +90,26 @@ def extract_top_pages(serp: Dict[str, Any], n: int = 10) -> List[str]:
     return links
 
 def extract_paa(serp: Dict[str, Any], n: int = 10) -> List[str]:
-    qs = []
-    for item in serp.get("related_questions", [])[:n]:
-        q = item.get("question")
+    items: List[str] = []
+    for obj in serp.get("related_questions", [])[:n]:
+        q = obj.get("question")
         if q:
-            qs.append(q)
-    return qs
+            items.append(q)
+    return items
 
 def safe_get(url: str, timeout: int = 12) -> str:
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; SEO-Brief/1.0; +https://example.com/bot)"
-        }
-        resp = requests.get(url, headers=headers, timeout=timeout)
-        if resp.ok and "text/html" in resp.headers.get("Content-Type", ""):
-            return resp.text
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; SEO-Brief/1.0; +https://example.com/bot)"}
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.ok and "text/html" in r.headers.get("Content-Type", ""):
+            return r.text
     except Exception:
         pass
     return ""
 
 def analyze_page(url: str) -> Tuple[str, str, List[str], int]:
     """
-    Returns: (title, meta_description, h2_list, outlink_count)
+    Returns: (title, meta_description, h2_list, external_outlink_count)
     """
     html = safe_get(url)
     if not html:
@@ -112,13 +118,12 @@ def analyze_page(url: str) -> Tuple[str, str, List[str], int]:
     soup = BeautifulSoup(html, "html.parser")
 
     # Title
-    title = ""
     try:
         title = (soup.title.string or "").strip() if soup.title else ""
     except Exception:
         title = ""
 
-    # Meta description (name=description or og:description)
+    # Meta description
     meta_desc = ""
     try:
         md = soup.find("meta", attrs={"name": "description"})
@@ -132,7 +137,7 @@ def analyze_page(url: str) -> Tuple[str, str, List[str], int]:
         meta_desc = ""
 
     # H2s (deduped)
-    h2s_raw = []
+    h2s_raw: List[str] = []
     try:
         for h2 in soup.find_all("h2"):
             txt = h2.get_text(" ", strip=True)
@@ -141,7 +146,7 @@ def analyze_page(url: str) -> Tuple[str, str, List[str], int]:
     except Exception:
         pass
     seen = set()
-    h2s = []
+    h2s: List[str] = []
     for h in h2s_raw:
         if h not in seen:
             seen.add(h)
@@ -164,20 +169,6 @@ def analyze_page(url: str) -> Tuple[str, str, List[str], int]:
 
     return title, meta_desc, h2s, outlinks
 
-def generate_openai_text(prompt: str, model: str = "gpt-4o-mini", max_tokens: int = 400, temperature: float = 0.7) -> str:
-    if not openai_client:
-        return "(OpenAI key missing in secrets)"
-    try:
-        resp = openai_client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        return f"(OpenAI error: {e})"
-
 def pick_internal_links(all_urls: List[str], keyword: str) -> List[str]:
     k = (keyword or "").lower().strip()
     if not k:
@@ -195,7 +186,7 @@ def make_ticker(progress, total_stages: int):
         progress.progress(step / total_stages)
     return tick
 
-# ---------- Sidebar ----------
+# ---------------------- SIDEBAR ----------------------
 with st.sidebar:
     st.subheader("Upload URLs (optional)")
     uploaded_file = st.file_uploader("CSV with a single column of URLs", type=["csv"])
@@ -208,10 +199,10 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Could not read CSV: {e}")
 
-# ---------- Tabs ----------
+# ---------------------- TABS ----------------------
 tab1, tab2 = st.tabs(["Generate SEO Brief", "Top Ranking Analysis"])
 
-# ---------- TAB 1: SEO BRIEF ----------
+# ---------------------- TAB 1: BRIEF ----------------------
 with tab1:
     st.header("SEO Content Brief")
 
@@ -220,7 +211,7 @@ with tab1:
     with col_a:
         st.session_state.location = st.text_input("Search Location (SerpAPI)", value=st.session_state.location)
     with col_b:
-        st.session_state.topn = st.number_input("Top N results to analyze", min_value=1, max_value=20, value=st.session_state.topn, step=1)
+        st.session_state.topn = st.number_input("Top N results to analyze", min_value=1, max_value=20, value=int(st.session_state.topn), step=1)
 
     generate = st.button("Generate Brief", type="primary", use_container_width=True)
 
@@ -230,7 +221,7 @@ with tab1:
         else:
             stages = [
                 "Fetching SERP data",
-                "Extracting top pages & PAA",
+                "Extracting top pages and PAA",
                 "Computing internal links",
                 "Drafting H2 sections",
                 "Writing H2 content",
@@ -244,11 +235,11 @@ with tab1:
 
             # Stage 1: SERP
             st.info(stages[i])
-            serp = fetch_serp(st.session_state.keyword, location=st.session_state.location)
+            serp = fetch_serp(st.session_state.keyword, st.session_state.location)
             st.session_state.serp_raw = serp
             tick(); i += 1
 
-            # Stage 2: top pages + PAA
+            # Stage 2: extract top pages and PAA
             st.info(stages[i])
             top_pages = extract_top_pages(serp, n=int(st.session_state.topn))
             paa = extract_paa(serp, n=10)
@@ -264,78 +255,89 @@ with tab1:
 
             # Stage 4: Draft H2 sections (LLM)
             st.info(stages[i])
-            h2_sections_prompt = f ""
-You are creating an SEO content outline.
-Primary keyword: "{st.session_state.keyword}""
-
-Propose 6–8 highly relevant H2 sections that comprehensively cover the topic.
-Return them as a simple bullet list with no extra commentary.
-""
+            h2_sections_prompt = (
+                "You are creating an SEO content outline.\n"
+                f'Primary keyword: "{st.session_state.keyword}"\n\n'
+                "Propose 6-8 highly relevant H2 sections that comprehensively cover the topic.\n"
+                "Return them as a simple bullet list with no extra commentary."
+            )
             h2_sections_text = generate_openai_text(h2_sections_prompt, max_tokens=300)
-            h2_sections = []
-            for line in h2_sections_text.splitlines():
-                line = line.strip("-• \t").strip()
+            h2_sections: List[str] = []
+            for line in (h2_sections_text or "").splitlines():
+                line = line.strip()
+                if line.startswith(("-", "*", "•")):
+                    line = line[1:].strip()
                 if line:
                     h2_sections.append(line)
             if not h2_sections:
-                h2_sections = [f"{st.session_state.keyword} – Section {n+1}" for n in range(6)]
+                h2_sections = [f"{st.session_state.keyword} - Section {n+1}" for n in range(6)]
             st.session_state.h2_sections = h2_sections[:8]
             tick(); i += 1
 
-            # Stage 5: H2 content
+            # Stage 5: H2 content (LLM)
             st.info(stages[i])
-            h2_content = []
+            h2_content: List[str] = []
             for section in st.session_state.h2_sections:
-                content_prompt = f"Write ~120–150 words for the section: **{section}**. Be concise and helpful. Avoid fluff."
+                content_prompt = (
+                    "Write approximately 120-150 words for the section: "
+                    + section
+                    + ". Be concise and helpful. Avoid fluff."
+                )
                 h2_content.append(generate_openai_text(content_prompt, max_tokens=220))
             st.session_state.h2_content = h2_content
             tick(); i += 1
 
-            # Stage 6: FAQs
+            # Stage 6: FAQs (LLM)
             st.info(stages[i])
             faqs = []
             for q in (st.session_state.paa or [])[:6]:
                 faq_ans = generate_openai_text(
-                    f"Provide a concise (2–3 sentences) answer to this FAQ for SEO content: {q}",
+                    "Provide a concise (2-3 sentences) answer to this FAQ for SEO content: " + q,
                     max_tokens=180,
                 )
                 faqs.append({"question": q, "answer": faq_ans})
             st.session_state.faqs = faqs
             tick(); i += 1
 
-            # Stage 7: Compile brief
+            # Stage 7: Compile brief table
             st.info(stages[i])
             est_outlinks = max(10, len(st.session_state.top_pages) * 5)
             url_slug = st.session_state.keyword.lower().strip().replace(" ", "-")
 
-            brief_rows = []
-            brief_rows.append(("Title", f"Best {st.session_state.keyword}: Complete Guide & Top Picks"))
-            brief_rows.append(("Meta Description", f"Learn everything about {st.session_state.keyword}. Clear sections, FAQs, and expert tips to help you decide."))
-            brief_rows.append(("H1", f"{st.session_state.keyword}: The Complete Guide"))
-            brief_rows.append(("Navigation Sidebar", "\n".join(st.session_state.h2_sections)))
-            brief_rows.append(("People Also Ask", "\n".join(st.session_state.paa)))
-            brief_rows.append(("Top Ranking Pages", "\n".join(st.session_state.top_pages)))
-            brief_rows.append(("URL Structure", f"https://www.example.com/{url_slug}"))
-            brief_rows.append(("Estimated Outlinks", est_outlinks))
-            brief_rows.append(("Internal Link Recommendations", "\n".join(st.session_state.internal_links)))
-            brief_rows.append(("Number of Page Sections", len(st.session_state.h2_sections)))
-            # Add H2 sections with generated copy
-            for section, copy in zip(st.session_state.h2_sections, st.session_state.h2_content):
-                brief_rows.append((section, copy))
-            # FAQs
-            faq_block = "\n".join([f"Q: {f['question']}\nA: {f['answer']}" for f in st.session_state.faqs]) if st.session_state.faqs else ""
-            brief_rows.append(("FAQs", faq_block))
+            rows = []
+            rows.append(("Title", "Best " + st.session_state.keyword + ": Complete Guide & Top Picks"))
+            rows.append(("Meta Description", "Learn everything about " + st.session_state.keyword + ". Clear sections, FAQs, and expert tips to help you decide."))
+            rows.append(("H1", st.session_state.keyword + ": The Complete Guide"))
+            rows.append(("Navigation Sidebar", "\n".join(st.session_state.h2_sections)))
+            rows.append(("People Also Ask", "\n".join(st.session_state.paa)))
+            rows.append(("Top Ranking Pages", "\n".join(st.session_state.top_pages)))
+            rows.append(("URL Structure", "https://www.example.com/" + url_slug))
+            rows.append(("Estimated Outlinks", est_outlinks))
+            rows.append(("Internal Link Recommendations", "\n".join(st.session_state.internal_links)))
+            rows.append(("Number of Page Sections", len(st.session_state.h2_sections)))
 
-            brief_df = pd.DataFrame(brief_rows, columns=["Section", "Output"])
+            for section, copy in zip(st.session_state.h2_sections, st.session_state.h2_content):
+                rows.append((section, copy))
+
+            faq_block = ""
+            if st.session_state.faqs:
+                faq_lines = []
+                for f in st.session_state.faqs:
+                    faq_lines.append("Q: " + f.get("question", ""))
+                    faq_lines.append("A: " + f.get("answer", ""))
+                faq_block = "\n".join(faq_lines)
+            rows.append(("FAQs", faq_block))
+
+            brief_df = pd.DataFrame(rows, columns=["Section", "Output"])
             st.session_state.brief_table = brief_df
             tick(); i += 1
 
             # Stage 8: Analyze top pages
             st.info(stages[i])
-            analysis_data = []
+            analysis_rows = []
             for url in st.session_state.top_pages:
                 title, meta_desc, h2s, outlinks = analyze_page(url)
-                analysis_data.append(
+                analysis_rows.append(
                     {
                         "URL": url,
                         "Title": title,
@@ -344,21 +346,23 @@ Return them as a simple bullet list with no extra commentary.
                         "Outlinks (external)": outlinks,
                     }
                 )
-            analysis_df = pd.DataFrame(analysis_data) if analysis_data else pd.DataFrame(
-                columns=["URL","Title","Meta Description","H2 Sections (sample)","Outlinks (external)"]
-            )
-            st.session_state.analysis_table = analysis_df
-            progress.progress(1.0)
-            st.success("SEO Brief Generated ✔")
+            if analysis_rows:
+                st.session_state.analysis_table = pd.DataFrame(analysis_rows)
+            else:
+                st.session_state.analysis_table = pd.DataFrame(
+                    columns=["URL", "Title", "Meta Description", "H2 Sections (sample)", "Outlinks (external)"]
+                )
 
-    # Render result if present
+            progress.progress(1.0)
+            st.success("SEO Brief Generated")
+
+    # Render output
     if st.session_state.brief_table is not None:
         st.dataframe(st.session_state.brief_table, height=720, use_container_width=True)
-        # Export button
         csv = st.session_state.brief_table.to_csv(index=False).encode("utf-8")
         st.download_button("Download Brief CSV", data=csv, file_name="seo_brief.csv", mime="text/csv", use_container_width=True)
 
-# ---------- TAB 2: TOP RANKING ANALYSIS ----------
+# ---------------------- TAB 2: ANALYSIS ----------------------
 with tab2:
     st.header("Top Ranking Articles Analysis")
     if st.session_state.analysis_table is not None and not st.session_state.analysis_table.empty:
@@ -368,13 +372,12 @@ with tab2:
         if domain_filter.strip():
             keep = []
             for _, row in df.iterrows():
+                ok = False
                 try:
-                    if urlparse(row["URL"]).netloc.endswith(domain_filter.strip()):
-                        keep.append(True)
-                    else:
-                        keep.append(False)
+                    ok = urlparse(row["URL"]).netloc.endswith(domain_filter.strip())
                 except Exception:
-                    keep.append(False)
+                    ok = False
+                keep.append(ok)
             df = df[keep]
         st.dataframe(df, height=600, use_container_width=True)
 
