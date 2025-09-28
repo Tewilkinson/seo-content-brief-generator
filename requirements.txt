@@ -3,6 +3,7 @@ requests>=2.31.0
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
 openai>=1.32.0
-Pillow==9.5.0
+numpy>=1.23
+pandas>=2.0
 python-docx>=0.8.12
-numpy>=1.21.0
+rich>=14.0
