@@ -1,11 +1,13 @@
-serpapi>=1.0.0
-beautifulsoup4>=4.13.0
-lxml>=4.9.3
-requests>=2.31.0
-openai>=1.32.0
-pandas>=2.0
-numpy>=1.23
 streamlit==1.26.0
-python-docx>=0.8.12
-altair>=5.0,<6
-rich>=10.14.0,<14
+requests>=2.31.0
+beautifulsoup4==4.14.0
+lxml==6.0.2
+openai>=1.32.0
+numpy==1.26.4
+pandas==2.3.2
+python-docx==1.2.0
+google-search-results==2.4.2   # this provides serpapi.GoogleSearch
+tiktoken==0.7.0
+pillow==9.5.0
+pyarrow==21.0.0
+rich==13.9.4                   # pin <14 to satisfy Streamlit 1.26.0
