@@ -1,243 +1,215 @@
 import streamlit as st
 import pandas as pd
-import requests
-from urllib.parse import urlparse
-from io import BytesIO
-from docx import Document
-from openai import OpenAI
 import numpy as np
+import requests
 from bs4 import BeautifulSoup
+from openai import OpenAI
+from docx import Document
+from io import BytesIO
+import time
 
-st.set_page_config(page_title="SEO Brief Generator", layout="wide")
-st.title("SEO Blog Brief Generator")
+# ------------------------------
+# Configuration
+# ------------------------------
 
-# -------------------------------
-# SECRETS
-# -------------------------------
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+st.set_page_config(page_title="SEO Content Brief Generator", layout="wide")
+st.title("SEO Content Brief Generator")
 
-# -------------------------------
-# INPUTS
-# -------------------------------
-keyword = st.text_input("Enter target keyword:")
-uploaded_csv = st.file_uploader("Upload CSV of pages (column: 'url')", type=["csv"])
-generate_btn = st.button("Generate SEO Brief")
+# Initialize OpenAI client using Streamlit secrets
+openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# -------------------------------
-# UTILITY FUNCTIONS
-# -------------------------------
-def fetch_top_serp_articles(keyword, api_key, num_results=2):
-    """Fetch top N ranking articles using SerpAPI."""
+# ------------------------------
+# Helper Functions
+# ------------------------------
+
+def fetch_serp_top_pages(keyword, num_results=2):
+    """Fetch top ranking URLs from SERPAPI for a given keyword."""
+    api_key = st.secrets["SERPAPI_KEY"]
     params = {
         "engine": "google",
         "q": keyword,
-        "location": "United States",
+        "num": num_results,
+        "api_key": api_key,
         "hl": "en",
-        "gl": "us",
-        "api_key": api_key
+        "gl": "us"
     }
-    r = requests.get("https://serpapi.com/search", params=params)
-    data = r.json()
-    results = []
-    for res in data.get("organic_results", [])[:num_results]:
-        results.append({
-            "url": res.get("link", ""),
-            "title": res.get("title", ""),
-            "meta": res.get("snippet", "")
-        })
-    return results
-
-def extract_url_topics(url):
-    """Use URL path segments as semantic topics."""
-    path = urlparse(url).path
-    segments = [seg for seg in path.split("/") if seg]
-    topics = []
-    for seg in segments:
-        topics += seg.replace("-", " ").split()
-    return " ".join(topics)
-
-def generate_embeddings(texts):
-    """Batch generate embeddings using OpenAI client."""
-    response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=texts
-    )
-    return [item.embedding for item in response.data]
-
-def cosine_similarity(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-def score_urls_semantic_batch(keyword, urls):
-    """Batch semantic scoring for URLs."""
-    url_topics = [extract_url_topics(u) for u in urls]
-    embeddings = generate_embeddings([keyword] + url_topics)
-    keyword_emb = embeddings[0]
-    url_embs = embeddings[1:]
-    return [(u, cosine_similarity(keyword_emb, emb)) for u, emb in zip(urls, url_embs)]
-
-def extract_h2_sections(url):
-    """Scrape H2 sections from a page."""
+    response = requests.get("https://serpapi.com/search", params=params)
+    results = response.json()
+    urls = []
     try:
-        r = requests.get(url, timeout=10)
-        soup = BeautifulSoup(r.text, "lxml")
+        for r in results.get("organic_results", []):
+            urls.append(r.get("link"))
+    except Exception:
+        pass
+    return urls
+
+def scrape_page_h2s_and_links(url):
+    """Scrape H2 sections and links from a page."""
+    try:
+        res = requests.get(url, timeout=10)
+        soup = BeautifulSoup(res.text, "lxml")
         h2s = [h.get_text().strip() for h in soup.find_all("h2")]
-        return h2s
-    except:
-        return []
+        outlinks = [a['href'] for a in soup.find_all('a', href=True)]
+        return h2s, outlinks
+    except Exception:
+        return [], []
 
-def count_outlinks(url):
-    """Count internal/external links in body excluding nav/footer."""
-    try:
-        r = requests.get(url, timeout=10)
-        soup = BeautifulSoup(r.text, "lxml")
-        links = [a.get("href") for a in soup.find_all("a") if a.get("href")]
-        # exclude obvious nav/footer based on common patterns
-        links = [l for l in links if not any(x in l for x in ["#","javascript","mailto"])]
-        return len(links)
-    except:
-        return 0
+def generate_embeddings(text_list):
+    """Generate embeddings using OpenAI."""
+    response = openai_client.embeddings.create(
+        model="text-embedding-3-large",
+        input=text_list
+    )
+    embeddings = [e.embedding for e in response.data]
+    return embeddings
 
-def generate_docx_table(brief_df):
-    """Create a .docx file from the brief DataFrame."""
+def generate_h2_content(h2, keyword):
+    """Generate content for each H2 section using OpenAI."""
+    prompt = f"Write a 150-200 word informational paragraph for the H2 section '{h2}' with keyword '{keyword}':"
+    resp = openai_client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=300
+    )
+    return resp.choices[0].message.content.strip()
+
+def generate_faqs(keyword):
+    """Generate 3 FAQs and answers using OpenAI."""
+    prompt = f"Generate 3 frequently asked questions with answers about '{keyword}' in short paragraphs:"
+    resp = openai_client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=400
+    )
+    content = resp.choices[0].message.content.strip()
+    faqs = []
+    for q in content.split("\n"):
+        if "?" in q:
+            faqs.append(q.strip())
+    return faqs
+
+def create_docx(brief, keyword):
+    """Generate DOCX file from the brief table."""
     doc = Document()
-    doc.add_heading("SEO Content Brief", 0)
-    table = doc.add_table(rows=1, cols=len(brief_df.columns))
+    doc.add_heading(f"SEO Content Brief for '{keyword}'", level=0)
+    table = doc.add_table(rows=1, cols=3)
     hdr_cells = table.rows[0].cells
-    for i, col in enumerate(brief_df.columns):
-        hdr_cells[i].text = col
-    for _, row in brief_df.iterrows():
-        cells = table.add_row().cells
-        for i, val in enumerate(row):
-            cells[i].text = str(val)
-    f = BytesIO()
-    doc.save(f)
-    f.seek(0)
-    return f
+    hdr_cells[0].text = "Section"
+    hdr_cells[1].text = "Output"
+    hdr_cells[2].text = "How to fill"
+    for section in brief:
+        row_cells = table.add_row().cells
+        row_cells[0].text = section
+        row_cells[1].text = brief[section]["output"]
+        row_cells[2].text = brief[section]["how"]
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio
 
-def fetch_people_also_ask(keyword):
-    """Fetch PAA questions from SERPAPI."""
-    try:
-        params = {
-            "engine": "google",
-            "q": keyword,
-            "location": "United States",
-            "hl": "en",
-            "gl": "us",
-            "api_key": SERPAPI_KEY
-        }
-        r = requests.get("https://serpapi.com/search", params=params)
-        data = r.json()
-        questions = []
-        for q in data.get("related_questions", []):
-            questions.append(q.get("question", ""))
-        return questions
-    except:
-        return []
+# ------------------------------
+# User Inputs
+# ------------------------------
 
-# -------------------------------
-# MAIN
-# -------------------------------
-if generate_btn:
-    if not keyword:
-        st.warning("Please enter a keyword.")
+st.sidebar.header("Settings")
+keyword = st.sidebar.text_input("Primary Keyword")
+uploaded_file = st.sidebar.file_uploader("Upload CSV with URLs to scan", type=["csv"])
+num_top_pages = st.sidebar.slider("Number of top pages to analyze (SERP)", 1, 5, 2)
+
+if keyword and uploaded_file:
+
+    df_urls = pd.read_csv(uploaded_file)
+    if "url" not in df_urls.columns:
+        st.error("CSV must contain a column named 'url'")
     else:
-        progress = st.progress(0)
-        status_text = st.empty()
-        progress_val = 0
+        urls_to_scan = df_urls["url"].tolist()
+        st.subheader("Progress")
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
 
-        # 1. Top 2 SERP articles
-        status_text.text("Fetching top ranking pages...")
-        top_pages = fetch_top_serp_articles(keyword, SERPAPI_KEY)
-        progress_val += 15
-        progress.progress(progress_val)
+        # ------------------------------
+        # Stage 1: Fetch top SERP pages
+        # ------------------------------
+        progress_text.text("Fetching top SERP pages...")
+        time.sleep(0.5)
+        serp_urls = fetch_serp_top_pages(keyword, num_top_pages)
+        progress_bar.progress(10)
 
-        # 2. CSV URLs semantic scoring
-        status_text.text("Processing uploaded CSV for internal link recommendations...")
-        if uploaded_csv:
-            df_pages = pd.read_csv(uploaded_csv)
-            urls = df_pages["url"].tolist()
-            semantic_scores = score_urls_semantic_batch(keyword, urls)
-            top_semantic_links = sorted(semantic_scores, key=lambda x: x[1], reverse=True)[:5]
-        else:
-            top_semantic_links = []
-        progress_val += 20
-        progress.progress(progress_val)
+        # ------------------------------
+        # Stage 2: Scrape pages & generate internal links
+        # ------------------------------
+        progress_text.text("Scraping uploaded URLs and generating semantic internal links...")
+        internal_links = []
+        total_h2s = []
+        outlinks_count = 0
+        for i, url in enumerate(urls_to_scan):
+            h2s, outlinks = scrape_page_h2s_and_links(url)
+            total_h2s.extend(h2s)
+            internal_links.extend([l for l in outlinks if keyword.lower() in l.lower()])
+            outlinks_count += len(outlinks)
+            progress_bar.progress(10 + int(40 * (i+1)/len(urls_to_scan)))
 
-        # 3. Extract H2s, outlinks, URL structure
-        status_text.text("Scraping top pages for H2s, outlinks, URL structure...")
-        sections = []
-        for i, page in enumerate(top_pages):
-            h2s = extract_h2_sections(page["url"])
-            num_outlinks = count_outlinks(page["url"])
-            url_struct = f"www.example.com/{keyword.replace(' ','-')}"
-            sections.append({
-                "Section": f"Top Page {i+1} Title",
-                "Output": page["title"],
-                "How I expect": "SEO optimized title based on top ranking page"
-            })
-            sections.append({
-                "Section": f"Top Page {i+1} Meta",
-                "Output": page["meta"],
-                "How I expect": "Unique meta description"
-            })
-            sections.append({
-                "Section": f"Top Page {i+1} H2s",
-                "Output": ", ".join(h2s[:5]),
-                "How I expect": "List of H2 sections on page"
-            })
-            sections.append({
-                "Section": f"Top Page {i+1} Est. Outlinks",
-                "Output": num_outlinks,
-                "How I expect": "Number of body links excluding nav/footer"
-            })
-            sections.append({
-                "Section": f"Top Page {i+1} URL structure",
-                "Output": url_struct,
-                "How I expect": "Suggested URL for new content"
-            })
-        progress_val += 30
-        progress.progress(progress_val)
+        # ------------------------------
+        # Stage 3: Generate H2 content
+        # ------------------------------
+        progress_text.text("Generating H2 section content...")
+        h2_content = {}
+        for i, h2 in enumerate(total_h2s):
+            h2_content[h2] = generate_h2_content(h2, keyword)
+            progress_bar.progress(50 + int(20 * (i+1)/len(total_h2s)))
 
-        # 4. People also ask
-        status_text.text("Fetching People Also Ask questions...")
-        paa_questions = fetch_people_also_ask(keyword)
-        sections.append({
-            "Section": "People Also Ask",
-            "Output": "\n".join(paa_questions),
-            "How I expect": "List of relevant questions from PAA"
-        })
-        progress_val += 15
-        progress.progress(progress_val)
+        # ------------------------------
+        # Stage 4: Generate FAQs
+        # ------------------------------
+        progress_text.text("Generating FAQs...")
+        faqs = generate_faqs(keyword)
+        progress_bar.progress(75)
 
-        # 5. Internal link recommendations
-        internal_links_text = "\n".join([f"{u} (score: {s:.2f})" for u, s in top_semantic_links])
-        sections.append({
-            "Section": "Internal link recommendations",
-            "Output": internal_links_text,
-            "How I expect": "Semantic links to include in article"
-        })
+        # ------------------------------
+        # Stage 5: Build Brief Table
+        # ------------------------------
+        brief = {
+            "Title": {"output": f"{keyword}: Everything You Need to Know", "how": "SEO optimized title"},
+            "Meta description": {"output": f"Learn about {keyword}, how it works, and why it matters.", "how": "Unique meta description"},
+            "H1": {"output": f"What is {keyword}?", "how": "Include primary keyword"},
+            "Navigational side bar": {"output": "\n".join(total_h2s), "how": "Bulleted list of sections"},
+            "People also asks": {"output": "\n".join(faqs), "how": "Pull from PAA or AI-generated FAQs"},
+            "Top ranking pages": {"output": "\n".join(serp_urls), "how": "Top pages from SERP"},
+            "URL structure": {"output": f"https://www.example.com/{keyword.replace(' ', '-').lower()}", "how": "Suggested URL structure"},
+            "Est. Number of outlinks": {"output": str(outlinks_count), "how": "Number of outlinks excluding nav/footer"},
+            "Internal link recommendations": {"output": "\n".join(internal_links), "how": "Semantic internal links"},
+            "Number of page sections": {"output": str(len(total_h2s)+1), "how": "Based on competitor H2s, add one extra"},
+        }
 
-        # 6. Consider writing topics
-        sections.append({
-            "Section": "Consider writing topics on",
-            "Output": "Other linked entities or pages missing in current content cluster",
-            "How I expect": "Suggest additional cluster content to cover"
-        })
+        # H2 Sections
+        for idx, h2 in enumerate(total_h2s[:5]):  # limit to top 5 H2s
+            key = f"h2_{idx}"
+            brief[f"H2 section {idx+1}"] = {"output": h2_content[h2], "how": "Auto-generated content"}
 
-        progress_val = 100
-        progress.progress(progress_val)
-        status_text.text("SEO brief generation complete!")
+        # FAQs
+        brief["FAQs"] = {"output": "\n".join(faqs), "how": "List FAQs and AI-generated answers"}
 
-        # Convert to DataFrame for table display
-        brief_df = pd.DataFrame(sections)
-        st.subheader("SEO Brief Table")
-        st.dataframe(brief_df)
+        # Suggest other articles based on internal links
+        brief["Consider writing topics on"] = {
+            "output": "\n".join([l for l in internal_links if l not in serp_urls]),
+            "how": "Recommend articles for the cluster based on semantic links"
+        }
 
-        # Download .docx
-        doc_file = generate_docx_table(brief_df)
-        st.download_button(
-            "Download SEO Brief (.docx)",
-            doc_file,
-            file_name=f"{keyword}_seo_brief.docx"
-        )
+        progress_bar.progress(100)
+        progress_text.text("Brief generated!")
+
+        # ------------------------------
+        # Display Table
+        # ------------------------------
+        st.subheader("SEO Content Brief Table")
+        for section, data in brief.items():
+            st.markdown(f"**{section}**")
+            st.text_area(f"{section} output", value=data["output"], height=100, key=f"{section}_area")
+            st.caption(f"How to fill: {data['how']}")
+
+        # ------------------------------
+        # Download DOCX
+        # ------------------------------
+        st.subheader("Download Brief")
+        docx_file = create_docx(brief, keyword)
+        st.download_button("Download DOCX", data=docx_file, file_name=f"{keyword}_brief.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
