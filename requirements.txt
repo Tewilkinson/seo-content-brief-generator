@@ -1,9 +1,8 @@
 streamlit==1.26.0
-rich>=10.14.0,<14
-openai>=1.32.0
-numpy>=1.23
-pandas>=2.0
-python-docx>=0.8.12
+requests>=2.31.0
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
-requests>=2.31.0
+openai>=1.32.0
+pandas>=2.0
+python-docx>=0.8.12
+serpapi>=1.0.0
